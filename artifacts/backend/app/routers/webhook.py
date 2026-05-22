@@ -6,6 +6,8 @@ from fastapi.responses import PlainTextResponse
 from app.config import get_settings
 from app.core.whatsapp import validate_whatsapp_signature
 from app.core.cache import get_tenant_id_by_phone, redis_client
+from app.database import AsyncSessionLocal
+from app.services.subscription import cache_tenant_tier
 from tasks.message_tasks import process_inbound_message
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,45 @@ async def _lookup_tenant_id(tenant_phone: str | None) -> str | None:
             return tenant_id
 
     return None
+
+
+async def _refresh_tenant_tier_cache(tenant_id: str) -> None:
+    """
+    Fetch the tenant's subscription tier from the DB and cache it in Redis.
+
+    Called once per webhook message (if the cache is stale or missing).
+    The subscription service sets the TTL so subsequent messages within the
+    same hour skip the DB round-trip entirely.
+    """
+    try:
+        from sqlalchemy import select, text
+        from app.models.tenants import Tenant
+
+        async with AsyncSessionLocal() as session:
+            # Bypass RLS for this internal read — super-admin context
+            await session.execute(
+                text("SELECT set_config('app.current_tenant', '', true)")
+            )
+            result = await session.execute(
+                select(Tenant.subscription_tier).where(
+                    Tenant.id == uuid.UUID(tenant_id)
+                )
+            )
+            row = result.first()
+            if row:
+                tier_value = row[0].value if hasattr(row[0], "value") else str(row[0])
+                await cache_tenant_tier(tenant_id, tier_value, redis_client)
+            else:
+                logger.warning(
+                    "Tenant %s not found in DB — defaulting tier cache to 'basic'",
+                    tenant_id,
+                )
+                await cache_tenant_tier(tenant_id, "basic", redis_client)
+    except Exception as exc:
+        # Non-fatal: quota check will fall back to the 'basic' default limit
+        logger.warning(
+            "Could not refresh tier cache for tenant %s: %s", tenant_id, exc
+        )
 
 
 def _normalize_message(
@@ -150,6 +191,9 @@ async def process_webhook_in_bg(payload_dict: dict, trace_id: str):
                 tenant_phone,
             )
             return
+
+        # Refresh the subscription tier cache (no-op if still fresh)
+        await _refresh_tenant_tier_cache(tenant_id)
 
         normalized_payload = _normalize_message(
             tenant_id=tenant_id,
