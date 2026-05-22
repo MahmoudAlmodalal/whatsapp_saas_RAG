@@ -1,0 +1,86 @@
+# ─── Web Framework ───────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# ─── Database ────────────────────────────────
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+alembic==1.13.1
+psycopg2-binary==2.9.9        # alembic offline scripts (sync driver)
+pgvector==0.3.2               # pgvector SQLAlchemy type (Vector column)
+
+# ─── Config & Env ────────────────────────────
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# ─── Redis ───────────────────────────────────
+redis[hiredis]==5.0.4
+
+# ─── HTTP Client ─────────────────────────────
+httpx==0.27.0
+boto3==1.34.106
+supabase==2.5.0
+
+# ─── Auth & Security ─────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.1.3
+slowapi==0.1.9              # per-tenant & per-IP rate limiting (TASK-015)
+
+# ─── Task Queue ──────────────────────────────
+celery[redis]==5.3.6
+
+# ─── Utilities ───────────────────────────────
+python-multipart==0.0.9       # form data / file uploads
+orjson==3.10.3                # fast JSON serialiser
+python-json-logger==2.0.7     # structured JSON logs
+
+# ─── RAG / Document Ingestion (TASK-008) ─────
+PyMuPDF==1.24.3               # PDF extraction (fitz)
+python-docx==1.1.2            # DOCX extraction
+openpyxl==3.1.2               # XLSX extraction
+camel-tools==1.5.7            # Arabic NLP: normalize_unicode, dediac_ar
+tiktoken==0.7.0               # Token counting (cl100k_base) for chunking
+sentence-transformers==3.0.1  # intfloat/multilingual-e5-large (1024-dim)
+# NOTE: sentence-transformers pulls in torch. For CPU-only workers use:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   (or pin torch CPU in a separate requirements-cpu.txt)
+
+# ─── RAG / Hybrid Retrieval (TASK-009) ───────
+rank_bm25==0.2.2              # BM25Okapi lexical search for RRF hybrid retrieval
+
+# ─── LLM Orchestrator (TASK-010) ─────────────────────────────────────────────
+openai>=1.30.0                # DeepSeek uses OpenAI-compatible API (AsyncOpenAI)
+
+# ─── Observability (TASK-014) ─────────────────────────────────────────────────
+langfuse>=2.36.0              # LLM observability: traces, spans, generations
+
+# ─── Admin Panel (TASK-016) ───────────────────────────────────────────────────
+sqladmin==0.18.0              # Django-like admin panel for FastAPI + SQLAlchemy
+itsdangerous==2.2.0           # Secure cookie signing for admin sessions
+
+# ─── Dev / Testing ───────────────────────────────────────────────────────────
+pytest==8.2.0
+pytest-asyncio==0.23.6
+pytest-mock==3.14.0           # mocker fixture for clean patching
+pytest-cov==5.0.0             # coverage integration with pytest
+httpx==0.27.0                 # async test client (also used in app)
+
+# ─── Factory & Fake Data ──────────────────────────────────────────────────────
+factory-boy==3.3.0            # factory_boy: ORM-aware test data factories
+Faker==25.2.0                 # Faker: realistic test data (supports Arabic locale)
+
+# ─── Snapshot Testing ─────────────────────────────────────────────────────────
+syrupy==4.6.1                 # Snapshot testing for LLM prompt output diffs
+
+# ─── Contract Testing ─────────────────────────────────────────────────────────
+schemathesis==3.28.0          # Property-based API contract tests from OpenAPI spec
+
+# ─── Performance / Load ───────────────────────────────────────────────────────
+locust==2.28.0                # HTTP load testing at scale
+
+# ─── E2E / Frontend Testing ───────────────────────────────────────────────────
+playwright==1.44.0            # Playwright for browser-based E2E tests
+
+# ─── Type Checking ────────────────────────────────────────────────────────────
+mypy==1.10.0                  # Static type analysis

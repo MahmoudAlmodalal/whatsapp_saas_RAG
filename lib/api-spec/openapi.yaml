@@ -2,21 +2,36 @@ openapi: 3.1.0
 info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
-  version: 0.1.0
-  description: API specification
+  version: 1.0.0
+  description: Rasan SaaS Chatbot Platform API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+    description: Health check
+  - name: auth
+    description: Authentication
+  - name: tenants
+    description: Tenant management
+  - name: documents
+    description: Knowledge base documents
+  - name: conversations
+    description: Chat conversations
+  - name: messages
+    description: Conversation messages
+  - name: chat
+    description: Public chatbot endpoint
+  - name: super-admin
+    description: Super admin operations
+
 paths:
+  # ─── Health ──────────────────────────────────────────────────────────────────
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +39,1063 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ─── Auth ─────────────────────────────────────────────────────────────────────
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login and receive auth cookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout and clear auth cookie
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current authenticated user
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ─── Tenants ──────────────────────────────────────────────────────────────────
+  /v1/tenants/{tenantId}:
+    get:
+      operationId: getTenant
+      tags: [tenants]
+      summary: Get tenant details
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      responses:
+        "200":
+          description: Tenant details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      operationId: updateTenant
+      tags: [tenants]
+      summary: Update tenant basic info
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantRequest"
+      responses:
+        "200":
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDetail"
+
+  /v1/tenants/{tenantId}/config:
+    put:
+      operationId: updateTenantConfig
+      tags: [tenants]
+      summary: Update tenant bot configuration
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantConfig"
+      responses:
+        "200":
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantDetail"
+
+  # ─── Documents ────────────────────────────────────────────────────────────────
+  /v1/tenants/{tenantId}/documents:
+    get:
+      operationId: listDocuments
+      tags: [documents]
+      summary: List knowledge base documents for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      responses:
+        "200":
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+
+    post:
+      operationId: uploadDocument
+      tags: [documents]
+      summary: Upload a knowledge base document
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required:
+                - file
+      responses:
+        "201":
+          description: Document uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /v1/tenants/{tenantId}/documents/{documentId}:
+    delete:
+      operationId: deleteDocument
+      tags: [documents]
+      summary: Delete a document
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Document deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ─── Conversations ────────────────────────────────────────────────────────────
+  /v1/tenants/{tenantId}/conversations:
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      summary: List conversations
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, handoff, closed]
+        - name: channel
+          in: query
+          schema:
+            type: string
+            enum: [web, telegram]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Conversation"
+
+  /v1/tenants/{tenantId}/conversations/{conversationId}:
+    get:
+      operationId: getConversation
+      tags: [conversations]
+      summary: Get conversation with messages
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      responses:
+        "200":
+          description: Conversation detail with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateConversationStatus
+      tags: [conversations]
+      summary: Update conversation status
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [active, handoff, closed]
+                ai_mode:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+
+  /v1/tenants/{tenantId}/conversations/{conversationId}/messages:
+    get:
+      operationId: listMessages
+      tags: [messages]
+      summary: Get messages for a conversation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      responses:
+        "200":
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+
+    post:
+      operationId: sendAgentMessage
+      tags: [messages]
+      summary: Send an agent message in a conversation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+              required:
+                - content
+      responses:
+        "201":
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+
+  # ─── Handoff Actions ──────────────────────────────────────────────────────────
+  /v1/tenants/{tenantId}/conversations/{conversationId}/handoff/accept:
+    post:
+      operationId: acceptHandoff
+      tags: [conversations]
+      summary: Accept a handoff conversation
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_id:
+                  type: string
+      responses:
+        "200":
+          description: Handoff accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Conversation"
+
+  /v1/tenants/{tenantId}/conversations/{conversationId}/handoff/resolve:
+    post:
+      operationId: resolveHandoff
+      tags: [conversations]
+      summary: Resolve a handoff
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                re_enable_ai:
+                  type: boolean
+      responses:
+        "200":
+          description: Handoff resolved
+
+  /v1/tenants/{tenantId}/conversations/{conversationId}/handoff/trigger:
+    post:
+      operationId: triggerHandoff
+      tags: [conversations]
+      summary: Manually trigger handoff
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+        - $ref: "#/components/parameters/conversationId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Handoff triggered
+
+  # ─── Public Chat ──────────────────────────────────────────────────────────────
+  /v1/chat/{botId}:
+    post:
+      operationId: sendChatMessage
+      tags: [chat]
+      summary: Send a message to the chatbot (public endpoint for widget/telegram)
+      parameters:
+        - name: botId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ─── Telegram Webhook ─────────────────────────────────────────────────────────
+  /v1/telegram/{botId}/webhook:
+    post:
+      operationId: telegramWebhook
+      tags: [chat]
+      summary: Telegram webhook endpoint
+      parameters:
+        - name: botId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Webhook processed
+
+  # ─── Super Admin ──────────────────────────────────────────────────────────────
+  /super-admin/auth/login:
+    post:
+      operationId: superAdminLogin
+      tags: [super-admin]
+      summary: Super admin login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /super-admin/tenants:
+    get:
+      operationId: listAllTenants
+      tags: [super-admin]
+      summary: List all tenants
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: All tenants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TenantSummary"
+
+    post:
+      operationId: createTenant
+      tags: [super-admin]
+      summary: Create a new tenant
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantSummary"
+
+  /super-admin/tenants/{tenantId}:
+    patch:
+      operationId: updateTenantAdmin
+      tags: [super-admin]
+      summary: Update tenant (admin)
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantAdminRequest"
+      responses:
+        "200":
+          description: Updated tenant
+
+    delete:
+      operationId: deleteTenant
+      tags: [super-admin]
+      summary: Delete a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      responses:
+        "204":
+          description: Tenant deleted
+
+  /super-admin/tenants/{tenantId}/users:
+    get:
+      operationId: listTenantUsers
+      tags: [super-admin]
+      summary: List users for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TenantUser"
+
+    post:
+      operationId: createTenantUser
+      tags: [super-admin]
+      summary: Create a user for a tenant
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/tenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+
+  /super-admin/users/{userId}:
+    patch:
+      operationId: updateTenantUser
+      tags: [super-admin]
+      summary: Update a tenant user
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: Updated user
+
+    delete:
+      operationId: deleteTenantUser
+      tags: [super-admin]
+      summary: Delete a tenant user
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: User deleted
+
+  /super-admin/settings:
+    get:
+      operationId: getSystemSettings
+      tags: [super-admin]
+      summary: Get system settings
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: System settings
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+
+    put:
+      operationId: updateSystemSettings
+      tags: [super-admin]
+      summary: Update system settings
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                openai_api_key:
+                  type: string
+      responses:
+        "200":
+          description: Settings updated
+
+# ─── Components ───────────────────────────────────────────────────────────────
+
 components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: rasan_token
+
+  parameters:
+    tenantId:
+      name: tenantId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    conversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
   schemas:
     HealthStatus:
       type: object
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        code:
+          type: string
+      required: [detail]
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required: [email, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/AuthUser"
+        superAdmin:
+          type: boolean
+
+    AuthMeResponse:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        user:
+          $ref: "#/components/schemas/AuthUser"
+
+    AuthUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        subscription_tier:
+          type: string
+          enum: [free, starter, pro, business]
+      required: [id, email, role]
+
+    TenantConfig:
+      type: object
+      properties:
+        ai_persona_name:
+          type: string
+        language:
+          type: string
+          enum: [ar, en, both]
+        tone:
+          type: string
+          enum: [friendly, professional, formal, concise]
+        handoff_keywords:
+          type: array
+          items:
+            type: string
+        confidence_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+        max_context_turns:
+          type: integer
+          minimum: 1
+          maximum: 30
+        telegram_bot_token:
+          type: string
+
+    TenantDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        subscription_tier:
+          type: string
+          enum: [free, starter, pro, business]
+        messages_used_this_month:
+          type: integer
+        is_active:
+          type: boolean
+        config:
+          $ref: "#/components/schemas/TenantConfig"
+        created_at:
+          type: string
+          format: date-time
+      required: [id, name, subscription_tier, is_active]
+
+    TenantSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        subscriptionTier:
+          type: string
+        isActive:
+          type: boolean
+        messagesUsed:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, subscriptionTier, isActive]
+
+    UpdateTenantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+
+    UpdateTenantAdminRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        subscriptionTier:
+          type: string
+          enum: [free, starter, pro, business]
+        isActive:
+          type: boolean
+
+    CreateTenantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        subscriptionTier:
+          type: string
+          enum: [free, starter, pro, business]
+        isActive:
+          type: boolean
+      required: [name]
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        file_name:
+          type: string
+        original_name:
+          type: string
+        file_type:
+          type: string
+        file_size:
+          type: integer
+        status:
+          type: string
+          enum: [queued, processing, ready, error]
+        chunk_count:
+          type: integer
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        uploaded_at:
+          type: string
+          format: date-time
+        processed_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, file_name, status, uploaded_at]
+
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [web, telegram]
+        customer_phone:
+          type: string
+        customer_identifier:
+          type: string
+        status:
+          type: string
+          enum: [active, handoff, closed]
+        ai_mode:
+          type: boolean
+        message_count:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+        last_message_at:
+          type: string
+          format: date-time
+      required: [id, status, channel]
+
+    ConversationDetail:
+      allOf:
+        - $ref: "#/components/schemas/Conversation"
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Message"
+            metadata:
+              type: object
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [customer, ai, agent]
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        tokens_used:
+          type: integer
+        latency_ms:
+          type: integer
+        model_used:
+          type: string
+        confidence:
+          type: number
+      required: [id, role, content, created_at]
+
+    ChatRequest:
+      type: object
+      properties:
+        message:
+          type: string
+        conversation_id:
+          type: string
+          format: uuid
+        customer_identifier:
+          type: string
+      required: [message, customer_identifier]
+
+    ChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+        conversation_id:
+          type: string
+          format: uuid
+        confidence:
+          type: number
+        latency_ms:
+          type: integer
+        tokens_used:
+          type: integer
+        status:
+          type: string
+          enum: [active, handoff]
+      required: [reply, conversation_id, status]
+
+    TenantUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenantId:
+          type: string
+          format: uuid
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, agent]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, email, role, isActive]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, agent]
+      required: [email, password]
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, agent]
+        isActive:
+          type: boolean
+        password:
+          type: string
