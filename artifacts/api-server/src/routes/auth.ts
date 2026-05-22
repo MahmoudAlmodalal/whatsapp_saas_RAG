@@ -8,7 +8,7 @@ import { eq, and } from "drizzle-orm";
 
 const router = Router();
 
-const BACKEND_API_URL = process.env.BACKEND_API_URL || "http://localhost:8001/api/v1";
+const BACKEND_API_URL = process.env.BACKEND_API_URL || "http://localhost:9000/api/v1";
 const SUPER_ADMIN_JWT_SECRET = process.env.SUPER_ADMIN_JWT_SECRET || "super-admin-dev-secret-change-in-prod";
 const JWT_SECRET = process.env.JWT_SECRET || "tenant-user-dev-secret-change-in-prod";
 

@@ -1,318 +1,157 @@
 import React, { useState, useRef } from "react";
-import { useAuth } from "@/components/AuthProvider";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  UploadCloud,
-  FileText,
-  Trash2,
-  CheckCircle,
-  AlertCircle,
-  Clock,
-  RefreshCw,
-  FileSpreadsheet,
-  FileArchive,
-  Plus,
-  Loader2
+  UploadCloud, FileText, Trash2, CheckCircle, AlertCircle,
+  Clock, Loader2, FileSpreadsheet, FileType2,
 } from "lucide-react";
-
-interface DocumentItem {
-  id: string;
-  file_name: string;
-  file_type: string;
-  status: "queued" | "processing" | "ready" | "failed";
-  chunk_count: number | null;
-  uploaded_at: string;
-  processed_at: string | null;
-}
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+interface Doc {
+  id: string;
+  filename: string;
+  file_type: string;
+  chunk_count: number;
+  status: string;
+  created_at: string;
+}
+
+function FileIcon({ type }: { type: string }) {
+  if (type === "xlsx") return <FileSpreadsheet className="w-5 h-5 text-green-400" />;
+  if (type === "docx") return <FileType2 className="w-5 h-5 text-blue-400" />;
+  return <FileText className="w-5 h-5 text-violet-400" />;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
+    ready: { label: "جاهز", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20", icon: <CheckCircle className="w-3.5 h-3.5" /> },
+    processing: { label: "معالجة...", className: "bg-blue-500/10 text-blue-400 border-blue-500/20", icon: <Loader2 className="w-3.5 h-3.5 animate-spin" /> },
+    error: { label: "خطأ", className: "bg-red-500/10 text-red-400 border-red-500/20", icon: <AlertCircle className="w-3.5 h-3.5" /> },
+  };
+  const s = map[status] ?? { label: status, className: "bg-slate-700 text-slate-400 border-slate-600", icon: <Clock className="w-3.5 h-3.5" /> };
+  return (
+    <span className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${s.className}`}>
+      {s.icon} {s.label}
+    </span>
+  );
+}
+
 export default function DocumentsPage() {
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const tenantId = user?.tenant_id;
-
-  const { data: documents = [], isLoading } = useQuery<DocumentItem[]>({
-    queryKey: ["documents", tenantId],
+  const { data, isLoading } = useQuery<{ documents: Doc[] }>({
+    queryKey: ["documents"],
     queryFn: async () => {
-      if (!tenantId) return [];
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/documents`);
-      if (!res.ok) throw new Error("فشل في جلب قائمة المستندات");
+      const res = await fetch(`${BASE}/api/v1/documents`, { credentials: "include" });
+      if (!res.ok) throw new Error("failed");
       return res.json();
     },
-    enabled: !!tenantId,
-    refetchInterval: (query) => {
-      // @ts-ignore
-      const docs = query.state.data as DocumentItem[] | undefined;
-      const hasPending = docs?.some(d => d.status === "queued" || d.status === "processing");
-      return hasPending ? 5000 : false;
-    }
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: async (docId: string) => {
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/documents/${docId}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("فشل في حذف المستند");
+  const uploadMut = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("company_id", "default");
+      const res = await fetch(`${BASE}/api/v1/upload`, { method: "POST", credentials: "include", body: fd });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.detail || "فشل الرفع");
+      return json;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents", tenantId] });
-      setSuccessMsg("تم حذف المستند بنجاح.");
-      setTimeout(() => setSuccessMsg(""), 3000);
+    onSuccess: (d) => {
+      setUploadMsg({ ok: true, text: d.message });
+      qc.invalidateQueries({ queryKey: ["documents"] });
     },
-    onError: (err: Error) => setErrorMsg(err.message || "حدث خطأ أثناء حذف المستند"),
+    onError: (e: Error) => setUploadMsg({ ok: false, text: e.message }),
   });
 
-  const handleUpload = async (file: File) => {
-    setErrorMsg("");
-    setSuccessMsg("");
-    const allowedExtensions = ["pdf", "docx", "txt", "xlsx"];
-    const fileExt = file.name.split(".").pop()?.toLowerCase() || "";
-    if (!allowedExtensions.includes(fileExt)) {
-      setErrorMsg("صيغة الملف غير مدعومة. الصيغ المسموح بها هي: PDF, DOCX, TXT, XLSX");
-      return;
-    }
-    const maxSize = 50 * 1024 * 1024;
-    if (file.size > maxSize) {
-      setErrorMsg("حجم الملف يتجاوز الحد الأقصى المسموح به (50 ميجابايت).");
-      return;
-    }
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`${BASE}/api/v1/documents/${id}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error("فشل الحذف");
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["documents"] }),
+  });
 
-    setUploading(true);
-    setUploadProgress(0);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const progressInterval = setInterval(() => {
-      setUploadProgress((prev) => Math.min(prev + 10, 90));
-    }, 200);
-
-    try {
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/documents`, {
-        method: "POST",
-        body: formData,
-      });
-      clearInterval(progressInterval);
-      setUploadProgress(100);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "فشل رفع الملف");
-      }
-      setSuccessMsg("تم رفع الملف بنجاح وهو قيد المعالجة.");
-      setTimeout(() => setSuccessMsg(""), 4000);
-      queryClient.invalidateQueries({ queryKey: ["documents", tenantId] });
-    } catch (e: unknown) {
-      clearInterval(progressInterval);
-      setErrorMsg(e instanceof Error ? e.message : "حدث خطأ غير متوقع أثناء الرفع.");
-    } finally {
-      setUploading(false);
-      setUploadProgress(0);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleUpload(file);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") setDragActive(true);
-    else if (e.type === "dragleave") setDragActive(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleUpload(file);
-  };
-
-  const triggerFileSelect = () => fileInputRef.current?.click();
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "ready":
-        return (
-          <span className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 font-medium">
-            <CheckCircle className="w-3.5 h-3.5" /> جاهز
-          </span>
-        );
-      case "processing":
-        return (
-          <span className="flex items-center gap-1.5 text-xs text-blue-400 bg-blue-500/10 px-2.5 py-1 rounded-full border border-blue-500/20 font-medium animate-pulse">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> معالجة
-          </span>
-        );
-      case "queued":
-        return (
-          <span className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-700 font-medium">
-            <Clock className="w-3.5 h-3.5" /> في الانتظار
-          </span>
-        );
-      case "failed":
-        return (
-          <span className="flex items-center gap-1.5 text-xs text-rose-400 bg-rose-500/10 px-2.5 py-1 rounded-full border border-rose-500/20 font-medium">
-            <AlertCircle className="w-3.5 h-3.5" /> فشل التحليل
-          </span>
-        );
-      default:
-        return null;
-    }
-  };
-
-  const getFileIcon = (fileName: string) => {
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    if (ext === "xlsx" || ext === "xls") return <FileSpreadsheet className="w-8 h-8 text-emerald-500" />;
-    if (ext === "pdf") return <FileArchive className="w-8 h-8 text-rose-500" />;
-    return <FileText className="w-8 h-8 text-blue-400" />;
-  };
+  function handleFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setUploadMsg(null);
+    Array.from(files).forEach((f) => uploadMut.mutate(f));
+  }
 
   return (
-    <div className="space-y-8 animate-fade-in">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-100">قاعدة المعرفة والمستندات</h1>
-          <p className="text-sm text-slate-400 mt-1">قم برفع مستندات عملك لتدريب الذكاء الاصطناعي على الإجابة منها.</p>
-        </div>
-        <button
-          onClick={triggerFileSelect}
-          disabled={uploading}
-          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/10 transition-all duration-200 shrink-0"
-        >
-          <Plus className="w-5 h-5 stroke-[2.5]" />
-          <span>إضافة مستند جديد</span>
-        </button>
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleFileChange}
-          accept=".pdf,.docx,.txt,.xlsx"
-          className="hidden"
-        />
+    <div className="p-8 space-y-8" dir="rtl">
+      <div>
+        <h1 className="text-2xl font-black text-slate-100">قاعدة المعرفة</h1>
+        <p className="text-slate-400 text-sm mt-1">ارفع مستنداتك وسيقرأها نصيح ويجيب عنها فوراً</p>
       </div>
 
-      {errorMsg && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-start gap-3 text-rose-400 text-sm animate-fade-in">
-          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
-      {successMsg && (
-        <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3 text-emerald-400 text-sm animate-fade-in">
-          <CheckCircle className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{successMsg}</span>
-        </div>
-      )}
-
       <div
-        onDragEnter={handleDrag}
-        onDragOver={handleDrag}
-        onDragLeave={handleDrag}
-        onDrop={handleDrop}
-        onClick={triggerFileSelect}
-        className={`border-2 border-dashed rounded-3xl p-10 flex flex-col items-center justify-center gap-4 cursor-pointer transition-all duration-300 ${
-          dragActive
-            ? "border-emerald-500 bg-emerald-500/[0.03]"
-            : "border-slate-800 bg-slate-900/30 hover:border-slate-700 hover:bg-slate-900/50"
-        } ${uploading ? "pointer-events-none opacity-60" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
+        onClick={() => fileRef.current?.click()}
+        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200
+          ${dragOver ? "border-emerald-500 bg-emerald-500/5" : "border-slate-700 hover:border-emerald-500/50 hover:bg-slate-800/30"}`}
       >
-        <div className="w-14 h-14 bg-slate-800 rounded-2xl flex items-center justify-center text-slate-400 border border-slate-700">
-          {uploading ? <RefreshCw className="w-7 h-7 text-emerald-500 animate-spin" /> : <UploadCloud className="w-7 h-7" />}
-        </div>
-        <div className="text-center">
-          <p className="font-bold text-slate-200">اسحب الملف وأفلته هنا، أو اضغط للتصفح</p>
-          <p className="text-xs text-slate-500 mt-1">تنسيقات الملفات المعتمدة: PDF, DOCX, TXT, XLSX (الحد الأقصى: 50 ميجابايت)</p>
-        </div>
-        {uploading && (
-          <div className="w-full max-w-xs mt-2 space-y-2">
-            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-              <div className="bg-emerald-500 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
-            </div>
-            <p className="text-[10px] text-slate-500 text-center">جاري رفع الملف... {uploadProgress}%</p>
+        <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.xlsx" className="hidden"
+          onChange={(e) => handleFiles(e.target.files)} />
+        {uploadMut.isPending ? (
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
+            <p className="text-slate-300 font-medium">جاري المعالجة والحفظ في ChromaDB...</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3">
+            <UploadCloud className="w-10 h-10 text-slate-500" />
+            <p className="text-slate-300 font-medium">اسحب ملفاتك هنا أو اضغط للاختيار</p>
+            <p className="text-slate-500 text-sm">PDF · DOCX · TXT · XLSX</p>
           </div>
         )}
       </div>
 
-      <div className="bg-slate-900/40 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
-        <div className="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
-          <h3 className="font-bold text-slate-200">ملفات المعرفة الخاصة بك</h3>
-          <span className="text-xs text-slate-500 font-mono">إجمالي المستندات: {documents.length}</span>
+      {uploadMsg && (
+        <div className={`flex items-start gap-3 rounded-xl px-4 py-3 border ${
+          uploadMsg.ok ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-red-500/10 border-red-500/20 text-red-400"
+        }`}>
+          {uploadMsg.ok ? <CheckCircle className="w-4 h-4 mt-0.5 shrink-0" /> : <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />}
+          <p className="text-sm">{uploadMsg.text}</p>
         </div>
+      )}
 
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+          <h2 className="font-bold text-slate-100">المستندات المرفوعة</h2>
+          <span className="text-slate-500 text-sm">{data?.documents?.length ?? 0} ملف</span>
+        </div>
         {isLoading ? (
-          <div className="py-20 flex flex-col items-center justify-center gap-3">
-            <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-            <span className="text-sm text-slate-400">جاري تحميل المستندات...</span>
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
           </div>
-        ) : documents.length === 0 ? (
-          <div className="py-20 text-center">
-            <FileText className="w-12 h-12 text-slate-700 mx-auto mb-3" />
-            <p className="font-bold text-slate-400">لا توجد مستندات مرفوعة حالياً</p>
-            <p className="text-xs text-slate-600 mt-1">ابدأ برفع مستندك الأول لتغذية قاعدة معلومات النظام.</p>
+        ) : !data?.documents?.length ? (
+          <div className="flex flex-col items-center justify-center py-16 gap-2">
+            <FileText className="w-10 h-10 text-slate-700" />
+            <p className="text-slate-500 text-sm">لا توجد مستندات بعد — ارفع ملفك الأول</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-right border-collapse text-sm">
-              <thead>
-                <tr className="bg-slate-900/80 text-slate-400 text-xs font-semibold uppercase border-b border-slate-800">
-                  <th className="px-6 py-4">اسم المستند</th>
-                  <th className="px-6 py-4">تاريخ الرفع</th>
-                  <th className="px-6 py-4">الأقسام المستخرجة</th>
-                  <th className="px-6 py-4">حالة المعالجة</th>
-                  <th className="px-6 py-4 text-left">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {documents.map((doc) => (
-                  <tr key={doc.id} className="hover:bg-slate-900/30 transition-colors duration-150">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        {getFileIcon(doc.file_name)}
-                        <div>
-                          <span className="font-bold text-slate-200 block max-w-xs truncate">{doc.file_name}</span>
-                          <span className="text-[10px] text-slate-500 font-mono uppercase">{doc.file_type}</span>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-slate-400 text-xs font-mono">
-                      {new Date(doc.uploaded_at).toLocaleString("ar-EG", {
-                        year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
-                      })}
-                    </td>
-                    <td className="px-6 py-4 text-slate-300 font-mono">{doc.chunk_count !== null ? doc.chunk_count : "—"}</td>
-                    <td className="px-6 py-4">{getStatusBadge(doc.status)}</td>
-                    <td className="px-6 py-4 text-left">
-                      <button
-                        onClick={() => {
-                          if (confirm("هل أنت متأكد من رغبتك في حذف هذا المستند نهائياً؟")) {
-                            deleteMutation.mutate(doc.id);
-                          }
-                        }}
-                        disabled={deleteMutation.isPending && deleteMutation.variables === doc.id}
-                        className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-xl transition-all duration-200 disabled:opacity-50"
-                      >
-                        {deleteMutation.isPending && deleteMutation.variables === doc.id
-                          ? <RefreshCw className="w-5 h-5 animate-spin" />
-                          : <Trash2 className="w-5 h-5" />}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="divide-y divide-slate-800">
+            {data.documents.map((doc) => (
+              <div key={doc.id} className="flex items-center gap-4 px-5 py-4 hover:bg-slate-800/30 transition-colors">
+                <FileIcon type={doc.file_type} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-slate-200 font-medium text-sm truncate">{doc.filename}</p>
+                  <p className="text-slate-500 text-xs mt-0.5">{doc.chunk_count} قطعة · {new Date(doc.created_at).toLocaleDateString("ar-SA")}</p>
+                </div>
+                <StatusBadge status={doc.status} />
+                <button onClick={() => deleteMut.mutate(doc.id)} disabled={deleteMut.isPending}
+                  className="p-2 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </div>

@@ -1,220 +1,192 @@
 import React, { useState } from "react";
-import { useAuth } from "@/components/AuthProvider";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useLocation } from "wouter";
-import {
-  UserCheck,
-  Bot,
-  Clock,
-  AlertTriangle,
-  Cpu,
-  Loader2,
-  ExternalLink,
-  CheckCircle2,
-  AlertCircle
-} from "lucide-react";
-
-interface PendingHandoff {
-  conversation_id: string;
-  customer_phone: string;
-  ai_summary: string | null;
-  last_message_at: string;
-  message_count: number;
-  handoff_reason: string | null;
-  assigned_agent_id: string | null;
-}
-
-interface PendingHandoffsResponse {
-  total: number;
-  items: PendingHandoff[];
-}
+import { UserCheck, Bot, User, CheckCircle, Clock, Send, ChevronDown, ChevronUp, Loader2, AlertCircle } from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+interface HandoffItem {
+  id: string;
+  session_id: string;
+  trigger_reason: string;
+  status: string;
+  agent_reply: string | null;
+  created_at: string;
+  history: Array<{ role: string; content: string }>;
+}
+
 export default function HandoffsPage() {
-  const { user } = useAuth();
-  const [, navigate] = useLocation();
-  const queryClient = useQueryClient();
-  const [successMsg, setSuccessMsg] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [replyTexts, setReplyTexts] = useState<Record<string, string>>({});
+  const [learnTexts, setLearnTexts] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState<"open" | "closed" | "all">("open");
 
-  const tenantId = user?.tenant_id;
-
-  const { data, isLoading } = useQuery<PendingHandoffsResponse>({
-    queryKey: ["pendingHandoffs", tenantId],
+  const { data, isLoading } = useQuery<{ handoffs: HandoffItem[] }>({
+    queryKey: ["handoffs", filter],
     queryFn: async () => {
-      if (!tenantId) return { total: 0, items: [] };
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/handoffs/pending`);
-      if (!res.ok) throw new Error("فشل في تحميل قائمة التحويل المعلقة");
+      const res = await fetch(`${BASE}/api/v1/handoffs?status=${filter}&company_id=default`, { credentials: "include" });
+      if (!res.ok) throw new Error("failed");
       return res.json();
     },
-    enabled: !!tenantId,
-    refetchInterval: 5000,
+    refetchInterval: 15000,
   });
 
-  const pendingItems = data?.items || [];
+  const replyMut = useMutation({
+    mutationFn: async ({ id, reply }: { id: string; reply: string }) => {
+      const res = await fetch(`${BASE}/api/v1/handoffs/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ agent_reply: reply }),
+      });
+      if (!res.ok) throw new Error("failed");
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["handoffs"] }),
+  });
 
-  const maskPhoneNumber = (phone: string) => {
-    if (!phone) return "";
-    const cleaned = phone.replace(/\s+/g, "");
-    if (cleaned.length > 7) return `${cleaned.slice(0, 4)}***${cleaned.slice(-4)}`;
-    return cleaned;
-  };
-
-  const acceptMutation = useMutation({
-    mutationFn: async (convId: string) => {
-      setErrorMsg("");
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/conversations/${convId}/handoff/accept`, {
+  const learnMut = useMutation({
+    mutationFn: async ({ question, answer }: { question: string; answer: string }) => {
+      const res = await fetch(`${BASE}/api/v1/learn`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: user?.id }),
+        credentials: "include",
+        body: JSON.stringify({ question, answer, company_id: "default" }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "فشل استلام المحادثة");
-      }
-      return { convId };
+      if (!res.ok) throw new Error("failed");
+      return res.json();
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["pendingHandoffs", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["conversations", tenantId] });
-      setSuccessMsg("تم استلام المحادثة بنجاح.");
-      setTimeout(() => setSuccessMsg(""), 3000);
-      navigate(`/dashboard/conversations/${data.convId}`);
-    },
-    onError: (err: Error) => setErrorMsg(err.message),
   });
 
-  const resolveMutation = useMutation({
-    mutationFn: async (convId: string) => {
-      setErrorMsg("");
-      const res = await fetch(`${BASE}/api/v1/tenants/${tenantId}/conversations/${convId}/handoff/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ re_enable_ai: true }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "فشل تفعيل الرد الآلي");
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["pendingHandoffs", tenantId] });
-      queryClient.invalidateQueries({ queryKey: ["conversations", tenantId] });
-      setSuccessMsg("تم إنهاء التحويل وإعادة تفعيل الذكاء الاصطناعي بنجاح.");
-      setTimeout(() => setSuccessMsg(""), 3000);
-    },
-    onError: (err: Error) => setErrorMsg(err.message),
-  });
+  const filterBtns: Array<{ value: typeof filter; label: string }> = [
+    { value: "open", label: "مفتوحة" },
+    { value: "closed", label: "مغلقة" },
+    { value: "all", label: "الكل" },
+  ];
 
   return (
-    <div className="space-y-8 animate-fade-in">
+    <div className="p-8 space-y-6" dir="rtl">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-100">قائمة انتظار التدخل البشري</h1>
-        <p className="text-sm text-slate-400 mt-1">
-          المحادثات التي تم تحويلها من الذكاء الاصطناعي وتنتظر استلامها من قِبَل موظف خدمة العملاء.
-        </p>
+        <h1 className="text-2xl font-black text-slate-100">تحويلات الموظفين</h1>
+        <p className="text-slate-400 text-sm mt-1">محادثات تحتاج تدخل بشري · أجب وعلّم نصيح</p>
       </div>
 
-      {successMsg && (
-        <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-start gap-3 text-emerald-400 text-sm animate-fade-in">
-          <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{successMsg}</span>
-        </div>
-      )}
-      {errorMsg && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-start gap-3 text-rose-400 text-sm animate-fade-in">
-          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+      <div className="flex gap-2">
+        {filterBtns.map((b) => (
+          <button key={b.value} onClick={() => setFilter(b.value)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+              filter === b.value
+                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                : "bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600"
+            }`}>
+            {b.label}
+          </button>
+        ))}
+      </div>
 
       {isLoading ? (
-        <div className="py-24 flex flex-col items-center justify-center gap-3">
-          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-          <span className="text-sm text-slate-400">جاري تحميل قائمة الانتظار...</span>
-        </div>
-      ) : pendingItems.length === 0 ? (
-        <div className="py-20 bg-slate-900/20 border border-slate-800 rounded-3xl text-center">
-          <div className="w-16 h-16 bg-emerald-500/5 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/10">
-            <CheckCircle2 className="w-8 h-8 text-emerald-500" />
-          </div>
-          <p className="font-bold text-slate-300">رائع! قائمة الانتظار فارغة</p>
-          <p className="text-xs text-slate-500 mt-1">الذكاء الاصطناعي يتعامل مع جميع العملاء بكفاءة حالياً.</p>
+        <div className="flex items-center justify-center py-20"><Loader2 className="w-6 h-6 text-emerald-500 animate-spin" /></div>
+      ) : !data?.handoffs?.length ? (
+        <div className="flex flex-col items-center justify-center py-20 gap-3 bg-slate-900 border border-slate-800 rounded-2xl">
+          <CheckCircle className="w-10 h-10 text-emerald-500" />
+          <p className="text-slate-400">لا توجد تحويلات {filter === "open" ? "مفتوحة" : ""}</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-6">
-          {pendingItems.map((item) => (
-            <div
-              key={item.conversation_id}
-              className="bg-slate-900/40 hover:bg-slate-900/60 border border-slate-800 rounded-3xl p-6 transition-all duration-200 shadow-xl flex flex-col lg:flex-row lg:items-start justify-between gap-6"
-            >
-              <div className="flex-1 space-y-4">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-base font-extrabold text-slate-100">
-                    {maskPhoneNumber(item.customer_phone)}
+        <div className="space-y-3">
+          {data.handoffs.map((h) => {
+            const isOpen = expanded === h.id;
+            const userMsg = h.history.filter((m) => m.role === "user").slice(-1)[0]?.content ?? "—";
+            return (
+              <div key={h.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                <button onClick={() => setExpanded(isOpen ? null : h.id)}
+                  className="w-full flex items-center gap-4 p-5 hover:bg-slate-800/30 transition-colors text-right">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                    h.status === "open" ? "bg-amber-500/10" : "bg-emerald-500/10"}`}>
+                    {h.status === "open"
+                      ? <Clock className="w-5 h-5 text-amber-400" />
+                      : <CheckCircle className="w-5 h-5 text-emerald-400" />}
+                  </div>
+                  <div className="flex-1 min-w-0 text-right">
+                    <p className="text-slate-200 text-sm font-medium truncate">{userMsg}</p>
+                    <p className="text-slate-500 text-xs mt-0.5">
+                      {h.trigger_reason} · {new Date(h.created_at).toLocaleString("ar-SA")}
+                    </p>
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded-full border shrink-0 ${
+                    h.status === "open"
+                      ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                      : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"}`}>
+                    {h.status === "open" ? "مفتوح" : "مغلق"}
                   </span>
-                  {item.handoff_reason && (
-                    <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      {item.handoff_reason}
-                    </span>
-                  )}
-                  {item.assigned_agent_id && (
-                    <span className="text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2.5 py-0.5 rounded-full">
-                      مستلمة من وكيل آخر
-                    </span>
-                  )}
-                </div>
+                  {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />}
+                </button>
 
-                {item.ai_summary && (
-                  <div className="p-3.5 bg-slate-950/40 border border-slate-800 rounded-2xl">
-                    <div className="flex items-center gap-1.5 text-emerald-400 font-bold text-[10px] mb-1.5">
-                      <Cpu className="w-3 h-3" /> ملخص الذكاء الاصطناعي:
+                {isOpen && (
+                  <div className="border-t border-slate-800 p-5 space-y-4">
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {h.history.map((m, i) => (
+                        <div key={i} className={`flex gap-2.5 ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                          <div className={`flex items-start gap-2 max-w-[80%] ${m.role === "user" ? "flex-row-reverse" : ""}`}>
+                            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+                              m.role === "user" ? "bg-blue-500/20" : "bg-emerald-500/20"}`}>
+                              {m.role === "user" ? <User className="w-3.5 h-3.5 text-blue-400" /> : <Bot className="w-3.5 h-3.5 text-emerald-400" />}
+                            </div>
+                            <div className={`rounded-xl px-3 py-2 text-sm ${
+                              m.role === "user" ? "bg-blue-500/10 text-blue-100" : "bg-slate-800 text-slate-200"}`}>
+                              {m.content}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <p className="text-xs text-slate-300 leading-relaxed">{item.ai_summary}</p>
+
+                    {h.status === "open" && (
+                      <div className="space-y-3 border-t border-slate-700 pt-4">
+                        <div className="relative">
+                          <textarea
+                            value={replyTexts[h.id] ?? ""}
+                            onChange={(e) => setReplyTexts((p) => ({ ...p, [h.id]: e.target.value }))}
+                            placeholder="اكتب ردك على العميل..."
+                            rows={3}
+                            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-none"
+                          />
+                        </div>
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => replyMut.mutate({ id: h.id, reply: replyTexts[h.id] ?? "" })}
+                            disabled={!replyTexts[h.id]?.trim() || replyMut.isPending}
+                            className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2.5 rounded-xl text-sm transition-colors disabled:opacity-50">
+                            <Send className="w-4 h-4" /> إغلاق التحويل
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const q = userMsg;
+                              const a = replyTexts[h.id] ?? "";
+                              if (!a.trim()) return;
+                              await learnMut.mutateAsync({ question: q, answer: a });
+                            }}
+                            disabled={!replyTexts[h.id]?.trim() || learnMut.isPending}
+                            className="flex items-center gap-2 bg-violet-500/10 hover:bg-violet-500/20 text-violet-400 border border-violet-500/20 font-medium px-4 py-2.5 rounded-xl text-sm transition-colors disabled:opacity-50">
+                            {learnMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserCheck className="w-4 h-4" />}
+                            أضف للمعرفة
+                          </button>
+                        </div>
+                        {learnMut.isSuccess && (
+                          <p className="text-emerald-400 text-xs">✓ تمت إضافة الإجابة لقاعدة المعرفة</p>
+                        )}
+                      </div>
+                    )}
+
+                    {h.agent_reply && (
+                      <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+                        <p className="text-emerald-400 text-xs mb-1 font-medium">رد الموظف:</p>
+                        <p className="text-slate-300 text-sm">{h.agent_reply}</p>
+                      </div>
+                    )}
                   </div>
                 )}
-
-                <div className="flex flex-wrap gap-4 text-xs text-slate-500">
-                  <span className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-slate-600" />
-                    آخر رسالة: {new Date(item.last_message_at).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" })}
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <Bot className="w-3.5 h-3.5 text-slate-600" />
-                    {item.message_count} رسالة
-                  </span>
-                </div>
               </div>
-
-              <div className="flex flex-col gap-2.5 shrink-0">
-                <button
-                  onClick={() => acceptMutation.mutate(item.conversation_id)}
-                  disabled={acceptMutation.isPending}
-                  className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all duration-200 text-sm"
-                >
-                  {acceptMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserCheck className="w-4 h-4" />}
-                  <span>استلام المحادثة</span>
-                </button>
-                <button
-                  onClick={() => navigate(`/dashboard/conversations/${item.conversation_id}`)}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 border border-slate-700 transition-all duration-200 text-sm"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  <span>عرض المحادثة</span>
-                </button>
-                <button
-                  onClick={() => resolveMutation.mutate(item.conversation_id)}
-                  disabled={resolveMutation.isPending}
-                  className="bg-slate-900 hover:bg-emerald-500/5 text-slate-400 hover:text-emerald-400 font-bold px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 border border-slate-800 hover:border-emerald-500/20 transition-all duration-200 text-sm"
-                >
-                  {resolveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
-                  <span>إعادة تفعيل الذكاء الاصطناعي</span>
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
