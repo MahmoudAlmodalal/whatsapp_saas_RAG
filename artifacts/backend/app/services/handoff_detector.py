@@ -15,8 +15,13 @@ by evaluating three independent signals:
       which the LLM orchestrator uses to signal insufficient knowledge.
 
   Check 3 — Explicit handoff request
-      Detects explicit customer requests for a human agent in both Arabic
-      and English ("تكلم مع موظف", "إنسان", "human", "agent", etc.).
+      Detects explicit *request* phrases for a human agent in both Arabic
+      and English.  Phrases are intentionally specific to avoid false
+      positives on common words.
+
+      NOT matched: standalone words like "خدمة عملاء"، "إنسان"، "agent"،
+      "human" — these appear in normal conversation (e.g. "شكراً على خدمة
+      عملاء ممتازة") and would produce unwanted handoffs.
 
 All checks are case-insensitive.  Returns True if ANY check passes.
 """
@@ -30,27 +35,47 @@ logger = logging.getLogger(__name__)
 _LOW_CONFIDENCE_MARKER = "لا أملك معلومات كافية"
 
 # ── Check 3: Explicit handoff request phrases (Arabic + English) ──────────────
+# Rules for adding a phrase:
+#   • Must be a request/command form, not a noun or descriptive phrase.
+#   • Must be specific enough that it cannot appear in positive/neutral context.
+#   • Arabic entries must cover both alef forms (أ / ا) where common.
 _EXPLICIT_HANDOFF_PHRASES: list[str] = [
-    # Arabic
+    # Arabic — request / command forms
     "تكلم مع موظف",
+    "تكلم مع إنسان",
+    "تكلم مع انسان",
     "تحدث مع موظف",
+    "تحدث مع إنسان",
+    "تحدث مع انسان",
     "أريد موظف",
     "اريد موظف",
-    "تواصل مع إنسان",
-    "تواصل مع انسان",
-    "إنسان",
-    "انسان",
+    "أريد التحدث مع موظف",
+    "اريد التحدث مع موظف",
+    "أريد التحدث مع إنسان",
+    "اريد التحدث مع انسان",
     "وكيل بشري",
     "ممثل خدمة عملاء",
-    "خدمة عملاء",
-    # English
-    "human",
-    "agent",
-    "real person",
+    "تواصل مع موظف",
+    "تواصل مع إنسان",
+    "تواصل مع انسان",
+    "حول محادثتي",
+    "حول المحادثة",
+    "ابغى اكلم موظف",
+    "ابغى موظف",
+    # English — request forms only
+    "speak to a human",
+    "talk to a human",
+    "speak to an agent",
+    "talk to an agent",
     "speak to someone",
     "talk to someone",
+    "connect me to an agent",
+    "transfer me to an agent",
+    "real person",
     "live agent",
-    "customer service",
+    "live support",
+    "human support",
+    "human agent",
 ]
 
 
@@ -72,7 +97,6 @@ def should_handoff(
         True if any handoff trigger condition is met, False otherwise.
     """
     content_lower = message_content.lower()
-    response_lower = ai_response.lower()
 
     # ── Check 1: Tenant-defined keyword match ─────────────────────────────────
     handoff_keywords: list[str] = tenant_config.get("handoff_keywords", [])

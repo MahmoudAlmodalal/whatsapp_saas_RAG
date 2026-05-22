@@ -7,7 +7,17 @@ import { eq } from "drizzle-orm";
 
 const router = Router();
 
-const SUPER_ADMIN_JWT_SECRET = process.env.SUPER_ADMIN_JWT_SECRET || "super-admin-dev-secret-change-in-prod";
+const DEFAULT_SECRET = "super-admin-dev-secret-change-in-prod";
+const SUPER_ADMIN_JWT_SECRET = process.env.SUPER_ADMIN_JWT_SECRET || DEFAULT_SECRET;
+
+if (process.env.NODE_ENV === "production" && SUPER_ADMIN_JWT_SECRET === DEFAULT_SECRET) {
+  console.error(
+    "[FATAL] SUPER_ADMIN_JWT_SECRET is set to the default insecure value in production. " +
+    "Set a strong secret via the SUPER_ADMIN_JWT_SECRET environment variable before starting."
+  );
+  process.exit(1);
+}
+
 const COOKIE_MAX_AGE = 8 * 3600 * 1000;
 
 function signSuperAdminToken(adminId: string, email: string) {

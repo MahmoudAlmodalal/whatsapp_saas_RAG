@@ -20,7 +20,9 @@ E5 embedding prefix
 
 Redis cache keys
 ────────────────
-  bm25_index:{tenant_id}  → pickled {"ids", "contents", "bm25"} blob (TTL 3 600 s)
+  bm25_index:{tenant_id}  → JSON {"ids": [...], "contents": [...]} blob (TTL 3 600 s)
+  The BM25 index object is rebuilt in-process from the cached corpus data.
+  Storing raw text (not pickled objects) eliminates the RCE attack surface.
 
 Cache invalidation
 ──────────────────
@@ -31,8 +33,8 @@ Cache invalidation
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import pickle
 import re
 from dataclasses import dataclass, field
 from typing import List
@@ -49,24 +51,21 @@ settings = get_settings()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Redis binary client (decode_responses=False required for pickle blobs)
+# Redis text client (decode_responses=True — we store JSON, not binary blobs)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_redis_binary: aioredis.Redis | None = None
+_redis_client: aioredis.Redis | None = None
 
 
-def _get_redis_binary() -> aioredis.Redis:
-    """
-    Return a module-level singleton Redis client configured for raw binary
-    data.  Must NOT use decode_responses=True because pickle payloads are bytes.
-    """
-    global _redis_binary
-    if _redis_binary is None:
-        _redis_binary = aioredis.from_url(
+def _get_redis() -> aioredis.Redis:
+    """Return a module-level singleton Redis client configured for text data."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = aioredis.from_url(
             settings.REDIS_URL,
-            decode_responses=False,  # binary mode — required for pickle
+            decode_responses=True,
         )
-    return _redis_binary
+    return _redis_client
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,12 +180,10 @@ async def vector_search(
     Returns:
         List[ChunkResult] sorted by cosine similarity descending.
     """
-    # Normalize + embed in thread pool (CPU-bound operations)
     normalized = await asyncio.to_thread(_normalize_query, query)
     query_embedding = await asyncio.to_thread(_embed_query_sync, normalized)
     embedding_str = _format_vector(query_embedding)
 
-    # Set RLS tenant context before any DB access
     await set_tenant_context(session, tenant_id)
 
     sql = text("""
@@ -231,7 +228,7 @@ async def vector_search(
 # 2. BM25 Lexical Search
 # ─────────────────────────────────────────────────────────────────────────────
 
-_BM25_CACHE_TTL = 3_600          # 1 hour in seconds
+_BM25_CACHE_TTL = 3_600
 _BM25_CACHE_KEY_PREFIX = "bm25_index"
 
 
@@ -241,16 +238,12 @@ def _bm25_cache_key(tenant_id: str) -> str:
 
 async def invalidate_bm25_cache(tenant_id: str) -> None:
     """
-    Delete the cached BM25 index for a tenant.
+    Delete the cached BM25 corpus for a tenant.
 
     Must be called from the ingestion pipeline *immediately after* store_chunks()
     so that the next bm25_search() rebuilds the index with the newly added chunks.
-
-    Usage in ingestion pipeline:
-        await store_chunks(chunks, embeddings, document_id, tenant_id, session)
-        await invalidate_bm25_cache(tenant_id)
     """
-    redis = _get_redis_binary()
+    redis = _get_redis()
     await redis.delete(_bm25_cache_key(tenant_id))
     logger.debug("BM25 cache invalidated for tenant %s", tenant_id)
 
@@ -274,12 +267,16 @@ async def bm25_search(
 
     Cache strategy
     ──────────────
-    The BM25 index (+ corpus metadata) is pickled and stored in Redis with a
-    1-hour TTL under key ``bm25_index:{tenant_id}``.  On cache miss the index
-    is rebuilt from the DB and persisted back to Redis.
+    The corpus (chunk ids + text contents) is stored as JSON in Redis with a
+    1-hour TTL under key ``bm25_index:{tenant_id}``.  The BM25 index object is
+    rebuilt in-process from the cached text on every cache hit — this avoids
+    the RCE risk of deserializing pickled Python objects from an external store.
+
+    On cache miss the corpus is fetched from DB, the index is built, and only
+    the raw text corpus is persisted back to Redis as JSON.
 
     Invalidation: call invalidate_bm25_cache(tenant_id) after ingestion so
-    the stale index is evicted and rebuilt on the next search.
+    the stale corpus is evicted and rebuilt on the next search.
 
     Args:
         query:     Raw user query string (Arabic or mixed).
@@ -291,34 +288,33 @@ async def bm25_search(
         List[ChunkResult] sorted by BM25 score descending.
     """
     normalized = await asyncio.to_thread(_normalize_query, query)
-    redis = _get_redis_binary()
+    redis = _get_redis()
     cache_key = _bm25_cache_key(tenant_id)
 
-    # ── Try Redis cache ───────────────────────────────────────────────────────
     chunk_ids: list[str] = []
     chunk_contents: list[str] = []
-    bm25_index = None
 
-    cached_blob: bytes | None = await redis.get(cache_key)
-    if cached_blob:
+    # ── Try Redis cache (JSON corpus only — no pickled objects) ───────────────
+    cached_json: str | None = await redis.get(cache_key)
+    if cached_json:
         try:
-            cached = pickle.loads(cached_blob)  # noqa: S301 — trusted internal data
+            cached = json.loads(cached_json)
             chunk_ids = cached["ids"]
             chunk_contents = cached["contents"]
-            bm25_index = cached["bm25"]
             logger.debug(
                 "BM25 cache HIT for tenant %s (%d chunks)",
                 tenant_id, len(chunk_ids),
             )
         except Exception as exc:
             logger.warning(
-                "BM25 cache deserialization failed for tenant %s (%s); rebuilding.",
+                "BM25 cache parse failed for tenant %s (%s); rebuilding.",
                 tenant_id, exc,
             )
-            bm25_index = None  # force rebuild
+            chunk_ids = []
+            chunk_contents = []
 
-    # ── Cache miss: build from DB ─────────────────────────────────────────────
-    if bm25_index is None:
+    # ── Cache miss: fetch corpus from DB ─────────────────────────────────────
+    if not chunk_ids:
         await set_tenant_context(session, tenant_id)
 
         sql = text("""
@@ -338,21 +334,18 @@ async def bm25_search(
         chunk_ids = [row.id for row in rows]
         chunk_contents = [row.content for row in rows]
 
-        # Build index in thread pool (CPU-bound)
-        bm25_index = await asyncio.to_thread(_build_bm25_index, chunk_contents)
-
-        # Serialize and cache with TTL
-        blob = pickle.dumps(
-            {"ids": chunk_ids, "contents": chunk_contents, "bm25": bm25_index},
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
-        await redis.set(cache_key, blob, ex=_BM25_CACHE_TTL)
+        # Cache only the raw text corpus as JSON (never pickled objects)
+        payload = json.dumps({"ids": chunk_ids, "contents": chunk_contents})
+        await redis.set(cache_key, payload, ex=_BM25_CACHE_TTL)
         logger.debug(
-            "BM25 cache MISS for tenant %s — built index (%d chunks), cached %ds.",
+            "BM25 cache MISS for tenant %s — cached %d chunks as JSON (%ds TTL).",
             tenant_id, len(chunk_ids), _BM25_CACHE_TTL,
         )
 
-    # ── Score query against the corpus ───────────────────────────────────────
+    # ── Build BM25 index in-process from corpus text (CPU-bound) ─────────────
+    bm25_index = await asyncio.to_thread(_build_bm25_index, chunk_contents)
+
+    # ── Score query against the corpus ────────────────────────────────────────
     query_tokens = normalized.split()
 
     def _score_query(index, tokens: list[str]) -> list[float]:
@@ -360,7 +353,6 @@ async def bm25_search(
 
     scores: list[float] = await asyncio.to_thread(_score_query, bm25_index, query_tokens)
 
-    # Pair scores with (id, content) and sort descending
     ranked = sorted(
         zip(chunk_ids, chunk_contents, scores),
         key=lambda x: x[2],
@@ -406,7 +398,6 @@ def reciprocal_rank_fusion(
         Single merged list sorted by RRF score descending, deduplicated by chunk id.
         The .score field of each ChunkResult holds the RRF score (not the original).
     """
-    # {chunk_id: {"chunk": ChunkResult, "rrf_score": float}}
     fused: dict[str, dict] = {}
 
     for rank, chunk in enumerate(vector_results, start=1):
